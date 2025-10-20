@@ -34,3 +34,6 @@ temp/
 # Database dumps
 *.sql.gz
 *.dump
+
+# Backups
+*.backup

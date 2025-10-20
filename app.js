@@ -1,21 +1,27 @@
 /**
- * Kangen Water Facebook Auto-Post System
- * Main application entry point
- *
- * This application automatically posts health and wellness content
- * about Kangen water to Facebook 3x daily with AI-generated content and images
+ * Kangen Water Facebook Auto-Post System - Optimized Edition
+ * Main application with engagement optimization, A/B testing, auto-approval, and cost tracking
  */
 
 import express from 'express';
 import path from 'path';
 import { fileURLToPath } from 'url';
 import dotenv from 'dotenv';
-import { testConnection as testDB, closePool, getPost, getRecentPosts as dbGetRecentPosts } from './lib/db.js';
+import { testConnection as testDB, closePool } from './lib/db.js';
 import { initRedis, closeQueues, getQueueStats, addContentGenerationJob, addPublishJob } from './lib/queue.js';
 import { testConnection as testOpenAI } from './lib/openai-generator.js';
 import { testConnection as testFacebook, getPageInfo } from './lib/facebook-poster.js';
 import { initScheduler, getHawaiiTime, schedulePost } from './scheduler.js';
 import pool from './lib/db.js';
+
+// Import optimization modules
+import { generateContentAndImageParallel, generateVariantsParallel } from './lib/parallel-generator.js';
+import { fetchPostEngagement, updateRecentPostsEngagement, getTopPosts } from './lib/engagement-tracker.js';
+import { calculateTopicWeights, selectWeightedTopic, getTopicRankings, initializeTopicWeights } from './lib/topic-analyzer.js';
+import { predictEngagement, getPredictionAccuracy } from './lib/engagement-predictor.js';
+import { determineApprovalAction, autoApprovePost, userApprovePost, rejectPost, getApprovalStats, getPendingReview, getApprovalSettings, updateApprovalSettings } from './lib/auto-approver.js';
+import { generateABTestVariants, selectVariant, compareVariantPerformance, getABTestStats } from './lib/ab-test-generator.js';
+import { getCostSummary, getCostTrends, calculateROI, getImageReuseStats, analyzeCostOptimizations } from './lib/cost-optimizer.js';
 
 // Import workers (they start automatically)
 import './workers/content-worker.js';
@@ -32,82 +38,58 @@ const PORT = process.env.PORT || 3000;
 
 let scheduler;
 let schedulerActive = false;
+let engagementTrackerInterval;
 
 // Middleware
 app.use(express.json());
 app.use(express.static(path.join(__dirname, 'public')));
 
-/**
- * Health check endpoint
- */
+// ============================================================================
+// HEALTH CHECK ENDPOINTS
+// ============================================================================
+
 app.get('/health', async (req, res) => {
   try {
+    const dbHealth = await testDB();
+    const openaiHealth = await testOpenAI();
+    const facebookHealth = await testFacebook();
     const queueStats = await getQueueStats();
 
     res.json({
       status: 'healthy',
-      timestamp: new Date().toISOString(),
-      hawaiiTime: getHawaiiTime(),
-      queues: queueStats,
-      environment: process.env.NODE_ENV || 'development',
-    });
-  } catch (error) {
-    res.status(500).json({
-      status: 'error',
-      message: error.message,
-    });
-  }
-});
-
-/**
- * Status endpoint
- */
-app.get('/status', async (req, res) => {
-  try {
-    const pageInfo = await getPageInfo();
-    const queueStats = await getQueueStats();
-
-    res.json({
-      status: 'running',
-      hawaiiTime: getHawaiiTime(),
-      facebookPage: pageInfo ? {
-        name: pageInfo.name,
-        id: pageInfo.id,
-        followers: pageInfo.followers_count,
-        category: pageInfo.category,
-      } : 'Not connected',
-      queues: queueStats,
-      schedule: {
-        timezone: 'Pacific/Honolulu',
-        times: ['6:00 AM', '12:00 PM', '6:00 PM'],
+      timestamp: new Date(),
+      components: {
+        database: dbHealth,
+        openai: openaiHealth,
+        facebook: facebookHealth,
+        queues: queueStats,
       },
     });
   } catch (error) {
-    res.status(500).json({
-      status: 'error',
-      message: error.message,
+    res.status(503).json({
+      status: 'unhealthy',
+      error: error.message,
     });
   }
 });
 
-/**
- * Dashboard API Endpoints
- */
+// ============================================================================
+// SYSTEM STATUS
+// ============================================================================
 
-// Get system status
 app.get('/api/status', (req, res) => {
   res.json({
     schedulerActive,
     hawaiiTime: getHawaiiTime(),
+    timestamp: new Date(),
   });
 });
 
-// Toggle scheduler
 app.post('/api/scheduler/toggle', (req, res) => {
   const { active } = req.body;
   schedulerActive = active;
 
-  if (active && scheduler && scheduler.morning && scheduler.noon && scheduler.evening) {
+  if (active && scheduler) {
     scheduler.morning.start();
     scheduler.noon.start();
     scheduler.evening.start();
@@ -122,40 +104,296 @@ app.post('/api/scheduler/toggle', (req, res) => {
   res.json({ success: true, active: schedulerActive });
 });
 
-// Get pending posts (awaiting approval)
-app.get('/api/posts/pending', async (req, res) => {
+// ============================================================================
+// ENGAGEMENT & ANALYTICS
+// ============================================================================
+
+app.get('/api/analytics/engagement', async (req, res) => {
   try {
-    const result = await pool.query(
-      `SELECT * FROM kangen_posts
-       WHERE status IN ('generating', 'scheduled')
-       ORDER BY created_at DESC LIMIT 10`
-    );
-    res.json(result.rows);
+    const topPosts = await getTopPosts(10);
+    const costSummary = await getCostSummary(30);
+    const roi = await calculateROI(30);
+    const predictionAccuracy = await getPredictionAccuracy();
+
+    res.json({
+      topPosts,
+      costs: costSummary,
+      roi,
+      predictionAccuracy,
+    });
   } catch (error) {
     res.status(500).json({ error: error.message });
   }
 });
 
-// Get recent posts
+app.get('/api/analytics/costs', async (req, res) => {
+  try {
+    const summary = await getCostSummary(30);
+    const trends = await getCostTrends(30);
+    const roi = await calculateROI(30);
+    const imageStats = await getImageReuseStats();
+    const optimizations = await analyzeCostOptimizations();
+
+    res.json({
+      summary,
+      trends,
+      roi,
+      imageReuse: imageStats,
+      opportunities: optimizations,
+    });
+  } catch (error) {
+    res.status(500).json({ error: error.message });
+  }
+});
+
+app.get('/api/analytics/topics', async (req, res) => {
+  try {
+    const rankings = await getTopicRankings();
+    res.json({ topicRankings: rankings });
+  } catch (error) {
+    res.status(500).json({ error: error.message });
+  }
+});
+
+// ============================================================================
+// POST GENERATION - PARALLEL & OPTIMIZED
+// ============================================================================
+
+app.post('/api/posts/generate', async (req, res) => {
+  try {
+    console.log('[API] Manual post generation requested');
+
+    // Use weighted topic selection
+    const topic = await selectWeightedTopic();
+    console.log('[API] Selected topic:', topic);
+
+    // Generate content and image in parallel
+    const generated = await generateContentAndImageParallel(topic);
+
+    // Predict engagement
+    const prediction = await predictEngagement(
+      topic,
+      generated.content,
+      generated.hashtags,
+      new Date()
+    );
+
+    // Determine approval action
+    const approvalAction = await determineApprovalAction(0, prediction.confidenceScore);
+
+    // Store post in database
+    const insertResult = await pool.query(
+      `INSERT INTO kangen_posts (topic, content, hashtags, image_url, status, confidence_score, approval_method)
+       VALUES ($1, $2, $3, $4, $5, $6, $7)
+       RETURNING id`,
+      [topic, generated.content, generated.hashtags, generated.imageUrl, 'scheduled', prediction.confidenceScore, approvalAction.action]
+    );
+
+    const postId = insertResult.rows[0].id;
+
+    res.json({
+      success: true,
+      post: {
+        id: postId,
+        topic,
+        content: generated.content,
+        hashtags: generated.hashtags,
+        imageUrl: generated.imageUrl,
+        generationTime: `${generated.generationTime}ms`,
+      },
+      prediction,
+      approvalAction,
+    });
+  } catch (error) {
+    console.error('[API] Error generating post:', error);
+    res.status(500).json({ error: error.message });
+  }
+});
+
+// ============================================================================
+// A/B TESTING
+// ============================================================================
+
+app.post('/api/posts/generate/variants', async (req, res) => {
+  try {
+    const { topic } = req.body;
+
+    if (!topic) {
+      return res.status(400).json({ error: 'Topic required' });
+    }
+
+    console.log('[API] Generating A/B test variants for topic:', topic);
+
+    const variants = await generateABTestVariants(topic);
+
+    // Store the best variant post
+    const bestVariant = variants.bestVariant;
+    const insertResult = await pool.query(
+      `INSERT INTO kangen_posts (topic, content, hashtags, image_url, status, confidence_score, variant_id)
+       VALUES ($1, $2, $3, $4, $5, $6, $7)
+       RETURNING id`,
+      [topic, bestVariant.content, bestVariant.hashtags, null, 'scheduled', bestVariant.predictedScore, 'variants_created']
+    );
+
+    const postId = insertResult.rows[0].id;
+
+    // Store all variants
+    const variantA = variants.variants.find((v) => v.variant === 'A');
+    const variantB = variants.variants.find((v) => v.variant === 'B');
+    const variantC = variants.variants.find((v) => v.variant === 'C');
+
+    await pool.query(
+      `INSERT INTO post_variants (post_id, variant_a_content, variant_a_hook, variant_a_cta, variant_a_predicted,
+                                   variant_b_content, variant_b_hook, variant_b_cta, variant_b_predicted,
+                                   variant_c_content, variant_c_hook, variant_c_cta, variant_c_predicted)
+       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13)`,
+      [
+        postId,
+        variantA?.content,
+        variantA?.hook,
+        variantA?.cta,
+        variantA?.predictedScore,
+        variantB?.content,
+        variantB?.hook,
+        variantB?.cta,
+        variantB?.predictedScore,
+        variantC?.content,
+        variantC?.hook,
+        variantC?.cta,
+        variantC?.predictedScore,
+      ]
+    );
+
+    res.json({
+      success: true,
+      postId,
+      variants: variants.variants,
+      bestVariant: variants.bestVariant,
+      recommendation: variants.recommendation,
+    });
+  } catch (error) {
+    console.error('[API] Error generating variants:', error);
+    res.status(500).json({ error: error.message });
+  }
+});
+
+app.post('/api/posts/:id/variant/:variant', async (req, res) => {
+  try {
+    const { id, variant } = req.params;
+
+    if (!['A', 'B', 'C'].includes(variant)) {
+      return res.status(400).json({ error: 'Invalid variant' });
+    }
+
+    const selected = await selectVariant(id, variant);
+
+    res.json({
+      success: true,
+      selectedVariant: selected,
+    });
+  } catch (error) {
+    res.status(500).json({ error: error.message });
+  }
+});
+
+// ============================================================================
+// APPROVAL WORKFLOW
+// ============================================================================
+
+app.get('/api/posts/pending', async (req, res) => {
+  try {
+    const pending = await getPendingReview(20);
+    res.json({ pending });
+  } catch (error) {
+    res.status(500).json({ error: error.message });
+  }
+});
+
+app.post('/api/posts/:id/approve', async (req, res) => {
+  try {
+    const postId = parseInt(req.params.id);
+    console.log(`[API] User approved post ${postId}`);
+
+    await userApprovePost(postId);
+
+    res.json({ success: true, action: 'approved' });
+  } catch (error) {
+    res.status(500).json({ error: error.message });
+  }
+});
+
+app.post('/api/posts/:id/reject', async (req, res) => {
+  try {
+    const postId = parseInt(req.params.id);
+    const { reason } = req.body;
+
+    console.log(`[API] User rejected post ${postId}: ${reason}`);
+
+    await rejectPost(postId, reason);
+
+    res.json({ success: true, action: 'rejected' });
+  } catch (error) {
+    res.status(500).json({ error: error.message });
+  }
+});
+
+// ============================================================================
+// AUTO-APPROVAL SETTINGS
+// ============================================================================
+
+app.get('/api/settings/approval', async (req, res) => {
+  try {
+    const settings = await getApprovalSettings();
+    const stats = await getApprovalStats();
+
+    res.json({
+      settings,
+      stats,
+    });
+  } catch (error) {
+    res.status(500).json({ error: error.message });
+  }
+});
+
+app.post('/api/settings/approval', async (req, res) => {
+  try {
+    const updated = await updateApprovalSettings(req.body);
+    res.json({ success: true, settings: updated });
+  } catch (error) {
+    res.status(500).json({ error: error.message });
+  }
+});
+
+// ============================================================================
+// POSTS MANAGEMENT
+// ============================================================================
+
 app.get('/api/posts/recent', async (req, res) => {
   try {
     const result = await pool.query(
       `SELECT * FROM kangen_posts
        WHERE status = 'posted'
-       ORDER BY posted_at DESC LIMIT 10`
+       ORDER BY posted_at DESC
+       LIMIT 10`
     );
-    res.json(result.rows);
+
+    res.json({ posts: result.rows });
   } catch (error) {
     res.status(500).json({ error: error.message });
   }
 });
 
-// Get stats
 app.get('/api/stats', async (req, res) => {
   try {
-    const totalResult = await pool.query('SELECT COUNT(*) as count FROM kangen_posts WHERE status = \'posted\'');
-    const pendingResult = await pool.query('SELECT COUNT(*) as count FROM kangen_posts WHERE status IN (\'generating\', \'scheduled\')');
-    const todayResult = await pool.query('SELECT COUNT(*) as count FROM kangen_posts WHERE status = \'posted\' AND DATE(posted_at) = CURRENT_DATE');
+    const totalResult = await pool.query(
+      "SELECT COUNT(*) as count FROM kangen_posts WHERE status = 'posted'"
+    );
+    const pendingResult = await pool.query(
+      "SELECT COUNT(*) as count FROM kangen_posts WHERE status IN ('generating', 'scheduled')"
+    );
+    const todayResult = await pool.query(
+      "SELECT COUNT(*) as count FROM kangen_posts WHERE status = 'posted' AND DATE(posted_at) = CURRENT_DATE"
+    );
 
     res.json({
       total: parseInt(totalResult.rows[0].count),
@@ -167,189 +405,104 @@ app.get('/api/stats', async (req, res) => {
   }
 });
 
-// Generate a preview post
-app.post('/api/posts/generate', async (req, res) => {
-  try {
-    console.log('[API] Manual post generation requested');
-    await schedulePost();
-    res.json({ success: true, message: 'Post generation started' });
-  } catch (error) {
-    console.error('[API] Error generating post:', error);
-    res.status(500).json({ error: error.message });
-  }
-});
+// ============================================================================
+// ROOT & UI
+// ============================================================================
 
-// Approve a post (queue it for publishing)
-app.post('/api/posts/:id/approve', async (req, res) => {
-  try {
-    const postId = parseInt(req.params.id);
-    console.log(`[API] Post ${postId} approved for publishing`);
-
-    // Update status
-    await pool.query('UPDATE kangen_posts SET status = $1 WHERE id = $2', ['posting', postId]);
-
-    // Queue for publishing
-    await addPublishJob(postId);
-
-    res.json({ success: true });
-  } catch (error) {
-    console.error('[API] Error approving post:', error);
-    res.status(500).json({ error: error.message });
-  }
-});
-
-// Reject a post
-app.post('/api/posts/:id/reject', async (req, res) => {
-  try {
-    const postId = parseInt(req.params.id);
-    console.log(`[API] Post ${postId} rejected`);
-
-    await pool.query('UPDATE kangen_posts SET status = $1, error_message = $2 WHERE id = $3',
-      ['failed', 'Rejected by user', postId]);
-
-    res.json({ success: true });
-  } catch (error) {
-    console.error('[API] Error rejecting post:', error);
-    res.status(500).json({ error: error.message });
-  }
-});
-
-/**
- * Root endpoint - Serve dashboard
- */
 app.get('/', (req, res) => {
   res.sendFile(path.join(__dirname, 'public', 'index.html'));
 });
 
-/**
- * Initialize and start the application
- */
-async function startApp() {
-  console.log('\n' + '='.repeat(70));
-  console.log('🌊 Kangen Water Facebook Auto-Post System');
-  console.log('='.repeat(70));
-  console.log(`Environment: ${process.env.NODE_ENV || 'development'}`);
-  console.log(`Current Hawaii Time: ${getHawaiiTime()}`);
-  console.log('='.repeat(70) + '\n');
+// ============================================================================
+// INITIALIZE & START
+// ============================================================================
 
+async function startApplication() {
   try {
-    // Test all connections
-    console.log('[App] Testing connections...\n');
+    console.log('\n======================================================================');
+    console.log('🚀 Kangen Water Facebook Auto-Post System - Optimized Edition');
+    console.log('======================================================================\n');
 
-    // 1. Test Database
-    console.log('[App] 1/4 Testing PostgreSQL connection...');
+    // Test connections
+    console.log('[Init] Testing connections...');
     await testDB();
-    console.log('[App] ✓ Database connected\n');
+    console.log('✓ Database connected');
 
-    // 2. Test Redis
-    console.log('[App] 2/4 Testing Redis connection...');
     await initRedis();
-    console.log('[App] ✓ Redis connected\n');
+    console.log('✓ Redis connected');
 
-    // 3. Test OpenAI
-    console.log('[App] 3/4 Testing OpenAI API...');
-    const openaiOk = await testOpenAI();
-    if (!openaiOk) {
-      throw new Error('OpenAI API test failed');
-    }
-    console.log('[App] ✓ OpenAI API connected\n');
+    await testOpenAI();
+    console.log('✓ OpenAI connected');
 
-    // 4. Test Facebook
-    console.log('[App] 4/4 Testing Facebook API...');
-    const fbOk = await testFacebook();
-    if (!fbOk) {
-      throw new Error('Facebook API test failed');
-    }
-    console.log('[App] ✓ Facebook API connected\n');
+    const pageInfo = await testFacebook();
+    console.log('✓ Facebook connected');
 
-    // Get Facebook page info
-    const pageInfo = await getPageInfo();
-    if (pageInfo) {
-      console.log('[App] 📘 Facebook Page Info:');
-      console.log(`[App]   Name: ${pageInfo.name}`);
-      console.log(`[App]   ID: ${pageInfo.id}`);
-      console.log(`[App]   Followers: ${pageInfo.followers_count || 'N/A'}`);
-      console.log(`[App]   Category: ${pageInfo.category || 'N/A'}\n`);
-    }
+    // Initialize topic weights
+    await initializeTopicWeights();
+    console.log('✓ Topic weights initialized');
 
-    // Start Express server
-    app.listen(PORT, () => {
-      console.log(`[App] 🌐 Express server running on port ${PORT}`);
-      console.log(`[App]   Health check: http://localhost:${PORT}/health`);
-      console.log(`[App]   Status: http://localhost:${PORT}/status\n`);
-    });
+    // Calculate initial topic weights
+    await calculateTopicWeights();
+    console.log('✓ Topic weights calculated');
 
     // Initialize scheduler
-    console.log('[App] 🕐 Starting scheduler...');
-    scheduler = initScheduler();
-    console.log('[App] ✓ Scheduler started\n');
+    scheduler = await initScheduler();
+    console.log('✓ Scheduler initialized');
 
-    // Display queue status
-    const queueStats = await getQueueStats();
-    console.log('[App] 📊 Queue Status:');
-    console.log(`[App]   Content Generation: ${JSON.stringify(queueStats.content)}`);
-    console.log(`[App]   Image Generation: ${JSON.stringify(queueStats.image)}`);
-    console.log(`[App]   Publishing: ${JSON.stringify(queueStats.publish)}`);
+    // Start engagement tracking (every 6 hours)
+    engagementTrackerInterval = setInterval(async () => {
+      try {
+        console.log('[System] Running engagement update...');
+        await updateRecentPostsEngagement();
+        await calculateTopicWeights(); // Recalculate weights based on new data
+      } catch (error) {
+        console.error('[System] Engagement update error:', error);
+      }
+    }, 6 * 60 * 60 * 1000); // 6 hours
 
-    console.log('\n' + '='.repeat(70));
-    console.log('✅ System is ready and running!');
-    console.log('🤖 Workers are waiting for scheduled jobs...');
-    console.log('📅 Next posts scheduled for 6 AM, 12 PM, and 6 PM HST');
-    console.log('='.repeat(70) + '\n');
+    // Start server
+    app.listen(PORT, () => {
+      console.log(`\n✓ Server running on http://localhost:${PORT}`);
+      console.log(`\n📊 Dashboard: http://localhost:${PORT}`);
+      console.log(`\n✨ Automatic posting is ${schedulerActive ? 'ACTIVE' : 'PAUSED'}`);
+      console.log(`\n📈 Features Enabled:`);
+      console.log('   • Parallel content + image generation (15s)');
+      console.log('   • Engagement tracking & analytics');
+      console.log('   • Topic performance weighting');
+      console.log('   • Confidence scoring & predictions');
+      console.log('   • Smart auto-approval');
+      console.log('   • A/B testing variants');
+      console.log('   • Cost optimization & tracking');
+      console.log('\n' + '='.repeat(70) + '\n');
+    });
   } catch (error) {
-    console.error('\n❌ Failed to start application:', error.message);
-    console.error('\nPlease check your configuration and ensure:');
-    console.error('  1. PostgreSQL database is running and accessible');
-    console.error('  2. Redis server is running');
-    console.error('  3. OpenAI API key is valid');
-    console.error('  4. Facebook page access token is valid');
-    console.error('  5. All environment variables are set in .env file\n');
+    console.error('Failed to start application:', error);
     process.exit(1);
   }
 }
 
-/**
- * Graceful shutdown
- */
-async function shutdown() {
-  console.log('\n[App] Shutting down gracefully...');
+// Graceful shutdown
+process.on('SIGINT', async () => {
+  console.log('\n[System] Shutting down gracefully...');
 
-  try {
-    // Stop scheduler
-    if (scheduler) {
-      scheduler.stop();
-      console.log('[App] ✓ Scheduler stopped');
-    }
-
-    // Close queues
-    await closeQueues();
-    console.log('[App] ✓ Queues closed');
-
-    // Close database
-    await closePool();
-    console.log('[App] ✓ Database closed');
-
-    console.log('[App] Goodbye!\n');
-    process.exit(0);
-  } catch (error) {
-    console.error('[App] Error during shutdown:', error.message);
-    process.exit(1);
+  if (engagementTrackerInterval) {
+    clearInterval(engagementTrackerInterval);
   }
-}
 
-// Handle shutdown signals
-process.on('SIGTERM', shutdown);
-process.on('SIGINT', shutdown);
+  if (scheduler) {
+    if (scheduler.morning) scheduler.morning.stop();
+    if (scheduler.noon) scheduler.noon.stop();
+    if (scheduler.evening) scheduler.evening.stop();
+  }
 
-// Handle uncaught errors
-process.on('uncaughtException', (error) => {
-  console.error('[App] Uncaught Exception:', error);
-  shutdown();
-});
+  await closeQueues();
+  await closePool();
 
-process.on('unhandledRejection', (reason, promise) => {
-  console.error('[App] Unhandled Rejection at:', promise, 'reason:', reason);
+  console.log('✓ Shutdown complete');
+  process.exit(0);
 });
 
 // Start the application
-startApp();
+startApplication();
+
+export { app };

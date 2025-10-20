@@ -19,14 +19,16 @@
   "author": "",
   "license": "MIT",
   "dependencies": {
-    "openai": "^4.63.0",
-    "node-fetch": "^3.3.2",
-    "pg": "^8.13.1",
-    "redis": "^4.7.0",
     "bullmq": "^5.20.3",
-    "node-cron": "^3.0.3",
+    "chart.js": "^4.5.1",
     "dotenv": "^16.4.5",
-    "express": "^4.21.1"
+    "express": "^4.21.1",
+    "moment-timezone": "^0.6.0",
+    "node-cron": "^3.0.3",
+    "node-fetch": "^3.3.2",
+    "openai": "^4.63.0",
+    "pg": "^8.13.1",
+    "redis": "^4.7.0"
   },
   "engines": {
     "node": ">=18.0.0"
